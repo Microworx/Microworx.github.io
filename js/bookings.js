@@ -344,7 +344,17 @@
     try {
       var resp = await sbDelete('bookings?id=eq.' + encodeURIComponent(state.cancelKey));
       if (!resp.ok) throw new Error('cancel');
+
+      // Remove the cancelled slot from local availability so the calendar updates immediately
+      var cancelled = state.cancelResults.filter(function (r) { return r.id === state.cancelKey; })[0];
+      var next = Object.assign({}, state.bookings);
+      if (cancelled) {
+        next[cancelled.date] = (next[cancelled.date] || []).filter(function (b) { return b.time !== cancelled.slot; });
+        if (!next[cancelled.date].length) delete next[cancelled.date];
+      }
+
       setState({
+        bookings: next,
         loading: false,
         phase: 'cancel-done',
         cancelOpen: false, cancelSearched: false,
