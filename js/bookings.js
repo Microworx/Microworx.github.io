@@ -1,11 +1,13 @@
-/* Microworx bookings — vanilla JS calendar.
-   Stores bookings in localStorage under "mwx_bookings".
-   NOTE: localStorage is per-browser. For real multi-user booking you would
-   point saveBooking()/loadBookings() at a backend or form service. */
+/* Microworx bookings — vanilla JS calendar with Supabase backend.
+   window.MWX_SUPABASE_URL and window.MWX_SUPABASE_ANON_KEY are injected
+   by the Hugo layout from hugo.toml [params]. */
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'mwx_bookings';
+  var SUPABASE_URL = (window.MWX_SUPABASE_URL || '').replace(/\/$/, '');
+  var SUPABASE_KEY = window.MWX_SUPABASE_ANON_KEY || '';
+  var REST = SUPABASE_URL + '/rest/v1/';
+
   var MAX_PER_DAY = 4;
   var SLOTS = ['11:00', '11:15', '11:30', '11:45', '12:00', '12:15', '12:30', '12:45'];
   var DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -21,12 +23,6 @@
   function dowShort(iso) { var d = new Date(iso + 'T00:00:00'); return DOW_SHORT[d.getDay()]; }
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
-  function loadBookings() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch (e) { return {}; } }
-  function saveBookings(d) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch (e) {} }
-  function slotTime(b) { return typeof b === 'string' ? b : b.time; }
-  function bookedTimes(iso, bk) { return (bk[iso] || []).map(slotTime); }
-  function isDayFull(iso, bk) { return (bk[iso] || []).length >= MAX_PER_DAY; }
-
   function upcomingDays() {
     var today = new Date(); today.setHours(0, 0, 0, 0);
     var out = [];
@@ -37,18 +33,49 @@
     return out;
   }
 
+  /* ---- Supabase REST ---- */
+  function sbHeaders(extra) {
+    return Object.assign({ 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, extra || {});
+  }
+  function sbGet(path) { return fetch(REST + path, { headers: sbHeaders() }); }
+  function sbPost(path, body) {
+    return fetch(REST + path, {
+      method: 'POST',
+      headers: sbHeaders({ 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
+      body: JSON.stringify(body)
+    });
+  }
+  function sbDelete(path) { return fetch(REST + path, { method: 'DELETE', headers: sbHeaders() }); }
+
+  async function fetchAvailability() {
+    var today = isoOf(new Date());
+    var resp = await sbGet('bookings?select=date,slot&date=gte.' + today + '&order=date,slot');
+    if (!resp.ok) throw new Error('load');
+    var rows = await resp.json();
+    var out = {};
+    rows.forEach(function (r) {
+      if (!out[r.date]) out[r.date] = [];
+      out[r.date].push({ time: r.slot });
+    });
+    return out;
+  }
+
+  /* ---- state ---- */
   var state = {
-    bookings: loadBookings(),
+    initialized: false,
+    loading: false,
+    bookings: {},
     selectedDate: null,
     selectedTime: null,
     form: { name: '', phone: '', email: '', problem: '' },
     error: '',
-    phase: 'book',           // 'book' | 'confirmed' | 'cancel-done'
+    phase: 'book',
     confirmation: null,
     cancelOpen: false,
     cancelName: '',
     cancelEmail: '',
     cancelSearched: false,
+    cancelResults: [],
     cancelKey: null
   };
   var appEl;
@@ -59,22 +86,34 @@
   function dayStyle(full, sel) {
     var s = 'display:flex;flex-direction:column;gap:3px;align-items:flex-start;text-align:left;padding:14px 16px;border-radius:8px;transition:all .12s;cursor:' + (full ? 'not-allowed' : 'pointer') + ';';
     if (full) return s + 'border:1px solid #E5D8D0;background:#EDE0D8;color:#B8AEB0;';
-    if (sel) return s + 'border:2px solid #7A1F2B;background:#FBF1F2;color:#7A1F2B;box-shadow:0 4px 14px rgba(122,31,43,.14);';
+    if (sel)  return s + 'border:2px solid #7A1F2B;background:#FBF1F2;color:#7A1F2B;box-shadow:0 4px 14px rgba(122,31,43,.14);';
     return s + 'border:1px solid #DFD0C8;background:#FAF3EF;color:#3A3236;';
   }
   function slotStyle(taken, sel) {
     var s = "font-family:'Archivo',sans-serif;font-weight:600;font-size:13px;padding:10px 4px;border-radius:6px;transition:all .12s;cursor:" + (taken ? 'not-allowed' : 'pointer') + ';';
     if (taken) return s + 'border:1px solid #E5D8D0;background:#EDE0D8;color:#C3B9BB;text-decoration:line-through;';
-    if (sel) return s + 'border:2px solid #7A1F2B;background:#7A1F2B;color:#fff;';
+    if (sel)   return s + 'border:2px solid #7A1F2B;background:#7A1F2B;color:#fff;';
     return s + 'border:1px solid #DFD0C8;background:#FAF3EF;color:#3A3236;';
   }
   function inputStyle() { return 'width:100%;padding:13px 15px;border:1px solid #D4C9C2;border-radius:6px;font-size:15px;color:#241C1F;outline:none;box-sizing:border-box;background:#fff;'; }
+  function btnPrimary(disabled) {
+    return "font-family:'Archivo',sans-serif;font-weight:600;font-size:14px;color:" + (disabled ? '#C3B9BB' : '#fff') + ';background:' + (disabled ? '#E5D8D0' : '#7A1F2B') + ';border:none;padding:12px;border-radius:6px;cursor:' + (disabled ? 'default' : 'pointer') + ';flex:1;';
+  }
+  function btnGhost() { return "font-family:'Archivo',sans-serif;font-weight:600;font-size:14px;color:#9A6A5E;background:transparent;border:none;padding:12px;cursor:pointer;"; }
 
-  /* ---- build HTML ---- */
+  /* ---- HTML builders ---- */
   function buildHTML() {
+    if (!state.initialized) return spinnerHTML('Loading availability\u2026');
     if (state.phase === 'confirmed' && state.confirmation) return confirmedHTML();
     if (state.phase === 'cancel-done') return cancelDoneHTML();
     return bookHTML();
+  }
+
+  function spinnerHTML(msg) {
+    return '<div style="text-align:center;padding:60px 24px;color:#8C858A;">' +
+      '<div style="font-size:32px;margin-bottom:14px;animation:mwx-spin 1.2s linear infinite;display:inline-block;">&#8635;</div>' +
+      '<style>@keyframes mwx-spin{to{transform:rotate(360deg)}}</style>' +
+      '<div style="font-family:\'Archivo\',sans-serif;font-size:15px;margin-top:4px;">' + esc(msg) + '</div></div>';
   }
 
   function bookHTML() {
@@ -87,9 +126,10 @@
     var h = '<div><div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:15px;color:#241C1F;margin-bottom:16px;">1&nbsp;&nbsp;Pick a day</div>';
     h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;">';
     days.forEach(function (iso) {
-      var full = isDayFull(iso, state.bookings);
+      var count = (state.bookings[iso] || []).length;
+      var full = count >= MAX_PER_DAY;
       var sel = iso === state.selectedDate;
-      var remaining = MAX_PER_DAY - (state.bookings[iso] || []).length;
+      var remaining = MAX_PER_DAY - count;
       h += '<button type="button" data-act="day" data-iso="' + iso + '"' + (full ? ' disabled' : '') + ' style="' + dayStyle(full, sel) + '">' +
         '<span style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.7;">' + dowShort(iso) + '</span>' +
         '<span style="font-family:\'Archivo\',sans-serif;font-weight:800;font-size:22px;line-height:1.1;">' + shortDate(iso) + '</span>' +
@@ -110,8 +150,8 @@
   }
 
   function slotsHTML() {
-    var booked = bookedTimes(state.selectedDate, state.bookings);
-    var full = isDayFull(state.selectedDate, state.bookings);
+    var booked = (state.bookings[state.selectedDate] || []).map(function (b) { return b.time; });
+    var full = (state.bookings[state.selectedDate] || []).length >= MAX_PER_DAY;
     var h = '<div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:15px;color:#241C1F;margin-bottom:4px;">2&nbsp;&nbsp;Pick a time</div>' +
       '<div style="font-size:14px;color:#8C858A;margin-bottom:16px;">' + longDate(state.selectedDate) + '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:26px;">';
@@ -125,14 +165,15 @@
 
   function formHTML() {
     var f = state.form, len = f.problem.length;
+    var busy = state.loading;
     var h = '<div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:15px;color:#241C1F;margin-bottom:16px;">3&nbsp;&nbsp;Your details</div><div style="display:grid;gap:12px;">' +
-      '<input id="bk-name" type="text" placeholder="Full name" value="' + esc(f.name) + '" data-field="name" style="' + inputStyle() + '">' +
-      '<input id="bk-phone" type="tel" placeholder="Phone number" value="' + esc(f.phone) + '" data-field="phone" style="' + inputStyle() + '">' +
-      '<input id="bk-email" type="email" placeholder="Email address" value="' + esc(f.email) + '" data-field="email" style="' + inputStyle() + '">' +
+      '<input id="bk-name"    type="text"  placeholder="Full name"       value="' + esc(f.name)    + '" data-field="name"    style="' + inputStyle() + '">' +
+      '<input id="bk-phone"   type="tel"   placeholder="Phone number"    value="' + esc(f.phone)   + '" data-field="phone"   style="' + inputStyle() + '">' +
+      '<input id="bk-email"   type="email" placeholder="Email address"   value="' + esc(f.email)   + '" data-field="email"   style="' + inputStyle() + '">' +
       '<div><textarea id="bk-problem" data-field="problem" placeholder="Briefly describe your problem" maxlength="80" rows="2" style="' + inputStyle() + 'resize:none;">' + esc(f.problem) + '</textarea>' +
       '<div id="bk-count" style="font-size:12px;color:' + (len >= 75 ? '#B0303E' : '#A89498') + ';text-align:right;margin-top:3px;">' + len + '/80</div></div></div>';
     if (state.error) h += '<div style="margin-top:14px;font-size:13.5px;color:#B0303E;background:#FBEDEE;border:1px solid #F2D5D8;padding:10px 14px;border-radius:6px;">' + esc(state.error) + '</div>';
-    h += '<button type="button" data-act="submit" style="margin-top:20px;width:100%;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:16px;color:#fff;background:#7A1F2B;border:none;padding:15px;border-radius:6px;box-shadow:0 4px 14px rgba(122,31,43,.25);cursor:pointer;">Confirm booking</button>';
+    h += '<button type="button" data-act="submit"' + (busy ? ' disabled' : '') + ' style="margin-top:20px;width:100%;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:16px;color:#fff;background:' + (busy ? '#B8909A' : '#7A1F2B') + ';border:none;padding:15px;border-radius:6px;box-shadow:0 4px 14px rgba(122,31,43,.25);cursor:' + (busy ? 'default' : 'pointer') + ';">' + (busy ? 'Booking\u2026' : 'Confirm booking') + '</button>';
     h += '<div style="margin-top:10px;font-size:12px;color:#A89498;line-height:1.5;text-align:center;">A $100 diagnostic fee is due at check-in. Extra time billed in 15-min increments at $100/hr with your approval.</div>';
     return h;
   }
@@ -151,50 +192,38 @@
 
   function cancelSearchHTML() {
     var ok = state.cancelName.trim() && state.cancelEmail.trim();
+    var busy = state.loading;
     return '<div style="background:#F5EDE6;border:1px solid #DFD0C8;border-radius:8px;padding:18px;">' +
       '<div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:14px;color:#241C1F;margin-bottom:4px;">Find your appointment</div>' +
       '<div style="font-size:12.5px;color:#8C858A;margin-bottom:12px;line-height:1.45;">Enter the name and email you booked with.</div>' +
       '<div style="display:flex;flex-direction:column;gap:9px;margin-bottom:12px;">' +
-      '<input id="cn-name" type="text" placeholder="Full name" value="' + esc(state.cancelName) + '" data-cfield="cancelName" style="' + inputStyle() + '">' +
+      '<input id="cn-name"  type="text"  placeholder="Full name"     value="' + esc(state.cancelName)  + '" data-cfield="cancelName"  style="' + inputStyle() + '">' +
       '<input id="cn-email" type="email" placeholder="Email address" value="' + esc(state.cancelEmail) + '" data-cfield="cancelEmail" style="' + inputStyle() + '"></div>' +
       '<div style="display:flex;gap:10px;">' +
-      '<button type="button" data-act="find"' + (ok ? '' : ' disabled') + ' style="flex:1;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:' + (ok ? '#fff' : '#C3B9BB') + ';background:' + (ok ? '#7A1F2B' : '#E5D8D0') + ';border:none;padding:12px;border-radius:6px;cursor:' + (ok ? 'pointer' : 'default') + ';">Find my appointments</button>' +
-      '<button type="button" data-act="close-cancel" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:#9A6A5E;background:transparent;border:none;padding:12px;cursor:pointer;">Never mind</button>' +
+      '<button type="button" data-act="find"' + (!ok || busy ? ' disabled' : '') + ' style="' + btnPrimary(!ok || busy) + '">' + (busy ? 'Searching\u2026' : 'Find my appointments') + '</button>' +
+      '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button>' +
       '</div></div>';
   }
 
   function cancelListHTML() {
-    var name = state.cancelName.trim().toLowerCase();
-    var email = state.cancelEmail.trim().toLowerCase();
-    var today = new Date(); today.setHours(0, 0, 0, 0);
-    var mine = [];
-    Object.keys(state.bookings).forEach(function (iso) {
-      if (new Date(iso + 'T00:00:00') < today) return;
-      (state.bookings[iso] || []).forEach(function (b) {
-        if (typeof b === 'string') { mine.push({ key: iso + '|' + b, label: longDate(iso) + ' at ' + to12h(b) }); return; }
-        if ((b.name || '').trim().toLowerCase() === name && (b.email || '').trim().toLowerCase() === email) {
-          mine.push({ key: iso + '|' + b.time, label: longDate(iso) + ' at ' + to12h(b.time) });
-        }
-      });
-    });
-    mine.sort(function (a, b) { return a.key < b.key ? -1 : 1; });
-
     var h = '<div style="background:#F5EDE6;border:1px solid #DFD0C8;border-radius:8px;padding:18px;">';
-    if (!mine.length) {
+    if (!state.cancelResults.length) {
       h += '<div style="font-size:13.5px;color:#6E6669;line-height:1.5;margin-bottom:12px;">No upcoming appointments found for <strong>' + esc(state.cancelName) + '</strong>.</div>' +
         '<div style="display:flex;gap:10px;justify-content:center;">' +
-        '<button type="button" data-act="retry" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:#7A1F2B;background:transparent;border:1.5px solid #D4C9C2;padding:10px 18px;border-radius:6px;cursor:pointer;">Try again</button>' +
-        '<button type="button" data-act="close-cancel" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:#9A6A5E;background:transparent;border:none;padding:10px;cursor:pointer;">Never mind</button></div>';
+        '<button type="button" data-act="retry"        style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:#7A1F2B;background:transparent;border:1.5px solid #D4C9C2;padding:10px 18px;border-radius:6px;cursor:pointer;">Try again</button>' +
+        '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button></div>';
     } else {
+      var busy = state.loading;
       h += '<div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:14px;color:#241C1F;margin-bottom:10px;">Which appointment would you like to cancel?</div><div style="display:flex;flex-direction:column;gap:7px;margin-bottom:12px;">';
-      mine.forEach(function (m) {
-        var sel = state.cancelKey === m.key;
-        h += '<button type="button" data-act="pick" data-key="' + esc(m.key) + '" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:13.5px;padding:10px 14px;border-radius:6px;cursor:pointer;text-align:left;border:' + (sel ? '2px solid #7A1F2B' : '1px solid #DFD0C8') + ';background:' + (sel ? '#FBF1F2' : '#FAF3EF') + ';color:' + (sel ? '#7A1F2B' : '#3A3236') + ';">' + m.label + '</button>';
+      state.cancelResults.forEach(function (r) {
+        var sel = state.cancelKey === r.id;
+        var label = longDate(r.date) + ' at ' + to12h(r.slot);
+        h += '<button type="button" data-act="pick" data-key="' + esc(r.id) + '" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:13.5px;padding:10px 14px;border-radius:6px;cursor:pointer;text-align:left;border:' + (sel ? '2px solid #7A1F2B' : '1px solid #DFD0C8') + ';background:' + (sel ? '#FBF1F2' : '#FAF3EF') + ';color:' + (sel ? '#7A1F2B' : '#3A3236') + ';">' + label + '</button>';
       });
-      var can = !!state.cancelKey;
+      var can = !!state.cancelKey && !busy;
       h += '</div><div style="display:flex;gap:10px;">' +
-        '<button type="button" data-act="do-cancel"' + (can ? '' : ' disabled') + ' style="flex:1;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:' + (can ? '#fff' : '#C3B9BB') + ';background:' + (can ? '#7A1F2B' : '#E5D8D0') + ';border:none;padding:12px;border-radius:6px;cursor:' + (can ? 'pointer' : 'default') + ';">Cancel this appointment</button>' +
-        '<button type="button" data-act="close-cancel" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:14px;color:#9A6A5E;background:transparent;border:none;padding:12px;cursor:pointer;">Never mind</button></div>';
+        '<button type="button" data-act="do-cancel"' + (!can ? ' disabled' : '') + ' style="' + btnPrimary(!can) + '">' + (busy ? 'Cancelling\u2026' : 'Cancel this appointment') + '</button>' +
+        '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button></div>';
     }
     return h + '</div>';
   }
@@ -229,11 +258,98 @@
     var act = document.activeElement;
     var id = act && act.id ? act.id : null;
     var start = act && act.selectionStart != null ? act.selectionStart : null;
-    var end = act && act.selectionEnd != null ? act.selectionEnd : null;
+    var end   = act && act.selectionEnd   != null ? act.selectionEnd   : null;
     appEl.innerHTML = buildHTML();
     if (id) {
       var el = document.getElementById(id);
       if (el) { el.focus(); if (start != null && el.setSelectionRange) { try { el.setSelectionRange(start, end); } catch (e) {} } }
+    }
+  }
+
+  /* ---- async operations ---- */
+  async function init() {
+    try {
+      var bk = await fetchAvailability();
+      setState({ initialized: true, bookings: bk });
+    } catch (e) {
+      setState({ initialized: true, error: 'Could not load availability. Please refresh the page.' });
+    }
+  }
+
+  async function submit() {
+    var f = state.form;
+    if (!state.selectedTime)                                    return setState({ error: 'Please choose a time slot.' });
+    if (!f.name.trim())                                         return setState({ error: 'Please enter your name.' });
+    if (f.phone.replace(/\D/g, '').length < 7)                 return setState({ error: 'Please enter a valid phone number.' });
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email))         return setState({ error: 'Please enter a valid email address.' });
+
+    setState({ loading: true, error: '' });
+    try {
+      var resp = await sbPost('bookings', {
+        date:    state.selectedDate,
+        slot:    state.selectedTime,
+        name:    f.name.trim(),
+        email:   f.email.trim().toLowerCase(),
+        phone:   f.phone.trim(),
+        problem: f.problem.trim()
+      });
+
+      if (!resp.ok) {
+        var body = await resp.json().catch(function () { return {}; });
+        if (body.code === '23505' || (body.message && /unique/i.test(body.message))) {
+          var refreshed = await fetchAvailability().catch(function () { return state.bookings; });
+          setState({ bookings: refreshed, loading: false, error: 'That slot was just taken \u2014 please pick another.' });
+          return;
+        }
+        throw new Error('save');
+      }
+
+      var next = Object.assign({}, state.bookings);
+      next[state.selectedDate] = (next[state.selectedDate] || []).concat([{ time: state.selectedTime }]);
+      setState({
+        bookings: next,
+        loading: false,
+        phase: 'confirmed',
+        confirmation: { name: f.name.trim(), date: longDate(state.selectedDate), time: to12h(state.selectedTime) },
+        selectedDate: null, selectedTime: null,
+        form: { name: '', phone: '', email: '', problem: '' },
+        error: ''
+      });
+    } catch (e) {
+      setState({ loading: false, error: 'Could not save your booking. Please try again or call us at 585-271-0050.' });
+    }
+  }
+
+  async function findAppointments() {
+    setState({ loading: true, error: '' });
+    try {
+      var today = isoOf(new Date());
+      var n  = encodeURIComponent(state.cancelName.trim());
+      var em = encodeURIComponent(state.cancelEmail.trim().toLowerCase());
+      var resp = await sbGet('bookings?select=id,date,slot&name=ilike.' + n + '&email=ilike.' + em + '&date=gte.' + today + '&order=date,slot');
+      if (!resp.ok) throw new Error('search');
+      var rows = await resp.json();
+      setState({ loading: false, cancelSearched: true, cancelResults: rows });
+    } catch (e) {
+      setState({ loading: false, error: 'Could not search. Please try again.' });
+    }
+  }
+
+  async function doCancel() {
+    if (!state.cancelKey) return;
+    setState({ loading: true, error: '' });
+    try {
+      var resp = await sbDelete('bookings?id=eq.' + encodeURIComponent(state.cancelKey));
+      if (!resp.ok) throw new Error('cancel');
+      setState({
+        loading: false,
+        phase: 'cancel-done',
+        cancelOpen: false, cancelSearched: false,
+        cancelName: '', cancelEmail: '',
+        cancelResults: [], cancelKey: null
+      });
+    } catch (e) {
+      setState({ loading: false, error: 'Could not cancel. Please call us at 585-271-0050.' });
     }
   }
 
@@ -242,17 +358,17 @@
     var btn = e.target.closest('[data-act]');
     if (!btn || btn.disabled) return;
     var a = btn.getAttribute('data-act');
-    if (a === 'day') setState({ selectedDate: btn.getAttribute('data-iso'), selectedTime: null, error: '' });
-    else if (a === 'time') setState({ selectedTime: btn.getAttribute('data-time'), error: '' });
-    else if (a === 'submit') submit();
+    if      (a === 'day')         setState({ selectedDate: btn.getAttribute('data-iso'), selectedTime: null, error: '' });
+    else if (a === 'time')        setState({ selectedTime: btn.getAttribute('data-time'), error: '' });
+    else if (a === 'submit')      submit();
+    else if (a === 'find')        findAppointments();
+    else if (a === 'do-cancel')   doCancel();
     else if (a === 'book-another') setState({ phase: 'book', confirmation: null, selectedDate: null, selectedTime: null, form: { name: '', phone: '', email: '', problem: '' }, error: '' });
-    else if (a === 'reset') setState({ phase: 'book', selectedDate: null, selectedTime: null, cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelKey: null });
+    else if (a === 'reset')       setState({ phase: 'book', selectedDate: null, selectedTime: null, cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelResults: [], cancelKey: null });
     else if (a === 'open-cancel') setState({ cancelOpen: true });
-    else if (a === 'close-cancel') setState({ cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelKey: null });
-    else if (a === 'find') setState({ cancelSearched: true });
-    else if (a === 'retry') setState({ cancelSearched: false, cancelKey: null });
-    else if (a === 'pick') setState({ cancelKey: btn.getAttribute('data-key') });
-    else if (a === 'do-cancel') doCancel();
+    else if (a === 'close-cancel') setState({ cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelResults: [], cancelKey: null });
+    else if (a === 'retry')       setState({ cancelSearched: false, cancelKey: null, cancelResults: [] });
+    else if (a === 'pick')        setState({ cancelKey: btn.getAttribute('data-key') });
   }
 
   function onInput(e) {
@@ -274,43 +390,13 @@
     }
   }
 
-  function submit() {
-    var f = state.form;
-    if (!state.selectedTime) return setState({ error: 'Please choose a time slot.' });
-    if (!f.name.trim()) return setState({ error: 'Please enter your name.' });
-    if (f.phone.replace(/\D/g, '').length < 7) return setState({ error: 'Please enter a valid phone number.' });
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email)) return setState({ error: 'Please enter a valid email address.' });
-    var next = Object.assign({}, state.bookings);
-    next[state.selectedDate] = (next[state.selectedDate] || []).concat([{ time: state.selectedTime, name: f.name.trim(), email: f.email.trim().toLowerCase(), phone: f.phone.trim(), problem: f.problem.trim() }]);
-    saveBookings(next);
-    setState({
-      bookings: next, phase: 'confirmed',
-      confirmation: { name: f.name.trim(), date: longDate(state.selectedDate), time: to12h(state.selectedTime) },
-      selectedDate: null, selectedTime: null, form: { name: '', phone: '', email: '', problem: '' }, error: ''
-    });
-  }
-
-  function doCancel() {
-    if (!state.cancelKey) return;
-    var parts = state.cancelKey.split('|'), iso = parts[0], t = parts[1];
-    var email = state.cancelEmail.trim().toLowerCase();
-    var next = Object.assign({}, state.bookings);
-    next[iso] = (next[iso] || []).filter(function (b) {
-      if (slotTime(b) !== t) return true;
-      if (typeof b === 'string') return false;
-      return (b.email || '').trim().toLowerCase() !== email;
-    });
-    if (!next[iso] || !next[iso].length) delete next[iso];
-    saveBookings(next);
-    setState({ bookings: next, phase: 'cancel-done', cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelKey: null });
-  }
-
   function scheduleMidnight() {
     var now = new Date(), m = new Date(now); m.setHours(24, 0, 0, 0);
     setTimeout(function () {
-      var today = new Date(); today.setHours(0, 0, 0, 0);
-      if (state.selectedDate && new Date(state.selectedDate + 'T00:00:00') < today) { state.selectedDate = null; state.selectedTime = null; }
-      render(); scheduleMidnight();
+      if (state.selectedDate && new Date(state.selectedDate + 'T00:00:00') < new Date()) {
+        state.selectedDate = null; state.selectedTime = null;
+      }
+      fetchAvailability().then(function (bk) { setState({ bookings: bk }); }).catch(function () {}).finally(scheduleMidnight);
     }, m - now);
   }
 
@@ -320,6 +406,7 @@
     appEl.addEventListener('click', onClick);
     appEl.addEventListener('input', onInput);
     render();
+    init();
     scheduleMidnight();
   });
 })();
