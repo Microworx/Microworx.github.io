@@ -38,13 +38,6 @@
     return Object.assign({ 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, extra || {});
   }
   function sbGet(path) { return fetch(REST + path, { headers: sbHeaders() }); }
-  function sbPost(path, body) {
-    return fetch(REST + path, {
-      method: 'POST',
-      headers: sbHeaders({ 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
-      body: JSON.stringify(body)
-    });
-  }
   function sbRpc(fn, args) {
     return fetch(REST + 'rpc/' + fn, {
       method: 'POST',
@@ -293,23 +286,31 @@
 
     setState({ loading: true, error: '' });
     try {
-      var resp = await sbPost('bookings', {
-        date:    state.selectedDate,
-        slot:    state.selectedTime,
-        name:    f.name.trim(),
-        email:   f.email.trim().toLowerCase(),
-        phone:   f.phone.trim(),
-        problem: f.problem.trim()
+      var resp = await sbRpc('create_booking', {
+        p_date:    state.selectedDate,
+        p_slot:    state.selectedTime,
+        p_name:    f.name.trim(),
+        p_email:   f.email.trim().toLowerCase(),
+        p_phone:   f.phone.trim(),
+        p_problem: f.problem.trim()
       });
+      if (!resp.ok) throw new Error('save');
+      var status = await resp.json();
 
-      if (!resp.ok) {
-        var body = await resp.json().catch(function () { return {}; });
-        if (body.code === '23505' || (body.message && /unique/i.test(body.message))) {
-          var refreshed = await fetchAvailability().catch(function () { return state.bookings; });
-          setState({ bookings: refreshed, loading: false, error: 'That slot was just taken \u2014 please pick another.' });
-          return;
-        }
-        throw new Error('save');
+      if (status === 'slot_taken' || status === 'day_full') {
+        var refreshed = await fetchAvailability().catch(function () { return state.bookings; });
+        setState({
+          bookings: refreshed, loading: false, selectedTime: null,
+          error: status === 'day_full'
+            ? 'That day just filled up \u2014 please pick another day.'
+            : 'That slot was just taken \u2014 please pick another.'
+        });
+        return;
+      }
+      if (status !== 'ok') {
+        // invalid_slot / invalid_date / invalid_email / invalid_input
+        setState({ loading: false, error: 'Please check your details and try again.' });
+        return;
       }
 
       var next = Object.assign({}, state.bookings);
