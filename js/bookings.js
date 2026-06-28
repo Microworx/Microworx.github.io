@@ -202,7 +202,9 @@
       '<div style="display:flex;gap:10px;">' +
       '<button type="button" data-act="find"' + (!ok || busy ? ' disabled' : '') + ' style="' + btnPrimary(!ok || busy) + '">' + (busy ? 'Searching\u2026' : 'Find my appointments') + '</button>' +
       '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button>' +
-      '</div></div>';
+      '</div>' +
+      (state.error ? '<div style="margin-top:10px;font-size:13.5px;color:#B0303E;background:#FBEDEE;border:1px solid #F2D5D8;padding:10px 14px;border-radius:6px;">' + esc(state.error) + '</div>' : '') +
+      '</div>';
   }
 
   function cancelListHTML() {
@@ -223,7 +225,8 @@
       var can = !!state.cancelKey && !busy;
       h += '</div><div style="display:flex;gap:10px;">' +
         '<button type="button" data-act="do-cancel"' + (!can ? ' disabled' : '') + ' style="' + btnPrimary(!can) + '">' + (busy ? 'Cancelling\u2026' : 'Cancel this appointment') + '</button>' +
-        '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button></div>';
+        '<button type="button" data-act="close-cancel" style="' + btnGhost() + '">Never mind</button></div>' +
+        (state.error ? '<div style="margin-top:10px;font-size:13.5px;color:#B0303E;background:#FBEDEE;border:1px solid #F2D5D8;padding:10px 14px;border-radius:6px;">' + esc(state.error) + '</div>' : '');
     }
     return h + '</div>';
   }
@@ -366,7 +369,7 @@
     else if (a === 'book-another') setState({ phase: 'book', confirmation: null, selectedDate: null, selectedTime: null, form: { name: '', phone: '', email: '', problem: '' }, error: '' });
     else if (a === 'reset')       setState({ phase: 'book', selectedDate: null, selectedTime: null, cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelResults: [], cancelKey: null });
     else if (a === 'open-cancel') setState({ cancelOpen: true });
-    else if (a === 'close-cancel') setState({ cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelResults: [], cancelKey: null });
+    else if (a === 'close-cancel') setState({ cancelOpen: false, cancelSearched: false, cancelName: '', cancelEmail: '', cancelResults: [], cancelKey: null, error: '' });
     else if (a === 'retry')       setState({ cancelSearched: false, cancelKey: null, cancelResults: [] });
     else if (a === 'pick')        setState({ cancelKey: btn.getAttribute('data-key') });
   }
