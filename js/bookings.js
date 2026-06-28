@@ -45,11 +45,16 @@
       body: JSON.stringify(body)
     });
   }
-  function sbDelete(path) { return fetch(REST + path, { method: 'DELETE', headers: sbHeaders() }); }
+  function sbRpc(fn, args) {
+    return fetch(REST + 'rpc/' + fn, {
+      method: 'POST',
+      headers: sbHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(args)
+    });
+  }
 
   async function fetchAvailability() {
-    var today = isoOf(new Date());
-    var resp = await sbGet('bookings?select=date,slot&date=gte.' + today + '&order=date,slot');
+    var resp = await sbGet('booking_availability?select=date,slot&order=date,slot');
     if (!resp.ok) throw new Error('load');
     var rows = await resp.json();
     var out = {};
@@ -326,10 +331,10 @@
   async function findAppointments() {
     setState({ loading: true, error: '' });
     try {
-      var today = isoOf(new Date());
-      var n  = encodeURIComponent(state.cancelName.trim());
-      var em = encodeURIComponent(state.cancelEmail.trim().toLowerCase());
-      var resp = await sbGet('bookings?select=id,date,slot&name=ilike.' + n + '&email=ilike.' + em + '&date=gte.' + today + '&order=date,slot');
+      var resp = await sbRpc('find_my_bookings', {
+        p_name:  state.cancelName.trim(),
+        p_email: state.cancelEmail.trim().toLowerCase()
+      });
       if (!resp.ok) throw new Error('search');
       var rows = await resp.json();
       setState({ loading: false, cancelSearched: true, cancelResults: rows });
@@ -342,8 +347,13 @@
     if (!state.cancelKey) return;
     setState({ loading: true, error: '' });
     try {
-      var resp = await sbDelete('bookings?id=eq.' + encodeURIComponent(state.cancelKey));
+      var resp = await sbRpc('cancel_my_booking', {
+        p_id:    state.cancelKey,
+        p_email: state.cancelEmail.trim().toLowerCase()
+      });
       if (!resp.ok) throw new Error('cancel');
+      var deleted = await resp.json();
+      if (deleted === 0) throw new Error('cancel');
 
       // Remove the cancelled slot from local availability so the calendar updates immediately
       var cancelled = state.cancelResults.filter(function (r) { return r.id === state.cancelKey; })[0];
