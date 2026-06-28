@@ -7,6 +7,7 @@
   var SUPABASE_URL = (window.MWX_SUPABASE_URL || '').replace(/\/$/, '');
   var SUPABASE_KEY = window.MWX_SUPABASE_ANON_KEY || '';
   var REST = SUPABASE_URL + '/rest/v1/';
+  var FUNCTIONS = SUPABASE_URL + '/functions/v1/';
 
   var MAX_PER_DAY = 4;
   var SLOTS = ['11:00', '11:15', '11:30', '11:45', '12:00', '12:15', '12:30', '12:45'];
@@ -44,6 +45,27 @@
       headers: sbHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(args)
     });
+  }
+  // Edge Functions are public (no JWT); they verify the Turnstile token server-side.
+  function sbFn(name, body) {
+    return fetch(FUNCTIONS + name, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
+  function turnstileToken() {
+    try {
+      return (window.turnstile && window.MWX_TURNSTILE_WIDGET_ID != null)
+        ? (window.turnstile.getResponse(window.MWX_TURNSTILE_WIDGET_ID) || '') : '';
+    } catch (e) { return ''; }
+  }
+  function turnstileReset() {
+    try {
+      if (window.turnstile && window.MWX_TURNSTILE_WIDGET_ID != null) {
+        window.turnstile.reset(window.MWX_TURNSTILE_WIDGET_ID);
+      }
+    } catch (e) {}
   }
 
   async function fetchAvailability() {
@@ -284,19 +306,32 @@
     if (f.phone.replace(/\D/g, '').length < 7)                 return setState({ error: 'Please enter a valid phone number.' });
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email))         return setState({ error: 'Please enter a valid email address.' });
 
+    var token = turnstileToken();
+    if (!token) return setState({ error: 'Please complete the Security check below before booking.' });
+
     setState({ loading: true, error: '' });
     try {
-      var resp = await sbRpc('create_booking', {
-        p_date:    state.selectedDate,
-        p_slot:    state.selectedTime,
-        p_name:    f.name.trim(),
-        p_email:   f.email.trim().toLowerCase(),
-        p_phone:   f.phone.trim(),
-        p_problem: f.problem.trim()
+      var resp = await sbFn('book-appointment', {
+        token: token,
+        booking: {
+          date:    state.selectedDate,
+          slot:    state.selectedTime,
+          name:    f.name.trim(),
+          email:   f.email.trim().toLowerCase(),
+          phone:   f.phone.trim(),
+          problem: f.problem.trim()
+        }
       });
-      if (!resp.ok) throw new Error('save');
-      var status = await resp.json();
+      var data = await resp.json().catch(function () { return {}; });
+      var status = data.status;
 
+      // Turnstile tokens are single-use \u2014 reset so the next attempt gets a fresh one.
+      turnstileReset();
+
+      if (status === 'captcha_failed') {
+        setState({ loading: false, error: 'Verification failed. Please complete the Security check again.' });
+        return;
+      }
       if (status === 'slot_taken' || status === 'day_full') {
         var refreshed = await fetchAvailability().catch(function () { return state.bookings; });
         setState({
@@ -308,7 +343,7 @@
         return;
       }
       if (status !== 'ok') {
-        // invalid_slot / invalid_date / invalid_email / invalid_input
+        // invalid_slot / invalid_date / invalid_email / invalid_input / error
         setState({ loading: false, error: 'Please check your details and try again.' });
         return;
       }
@@ -325,6 +360,7 @@
         error: ''
       });
     } catch (e) {
+      turnstileReset();
       setState({ loading: false, error: 'Could not save your booking. Please try again or call us at 585-271-0050.' });
     }
   }
