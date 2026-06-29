@@ -22,7 +22,7 @@
   function longDate(iso) { var d = new Date(iso + 'T00:00:00'); return DOW_LONG[d.getDay()] + ', ' + MON_LONG[d.getMonth()] + ' ' + d.getDate(); }
   function shortDate(iso) { var d = new Date(iso + 'T00:00:00'); return MON_SHORT[d.getMonth()] + ' ' + d.getDate(); }
   function dowShort(iso) { var d = new Date(iso + 'T00:00:00'); return DOW_SHORT[d.getDay()]; }
-  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
   function upcomingDays() {
     var today = new Date(); today.setHours(0, 0, 0, 0);
@@ -257,7 +257,7 @@
       h += '<div style="font-family:\'Archivo\',sans-serif;font-weight:700;font-size:14px;color:#241C1F;margin-bottom:10px;">Which appointment would you like to cancel?</div><div style="display:flex;flex-direction:column;gap:7px;margin-bottom:12px;">';
       state.cancelResults.forEach(function (r) {
         var sel = state.cancelKey === r.id;
-        var label = longDate(r.date) + ' at ' + to12h(r.slot);
+        var label = esc(longDate(r.date) + ' at ' + to12h(r.slot));
         h += '<button type="button" data-act="pick" data-key="' + esc(r.id) + '" style="font-family:\'Archivo\',sans-serif;font-weight:600;font-size:13.5px;padding:10px 14px;border-radius:6px;cursor:pointer;text-align:left;border:' + (sel ? '2px solid #7A1F2B' : '1px solid #DFD0C8') + ';background:' + (sel ? '#FBF1F2' : '#FAF3EF') + ';color:' + (sel ? '#7A1F2B' : '#3A3236') + ';">' + label + '</button>';
       });
       var can = !!state.cancelKey && !busy;
@@ -274,7 +274,7 @@
     return '<div style="background:#F5EDE6;border:1px solid #DFD0C8;border-radius:11px;padding:48px;text-align:center;">' +
       '<div style="width:64px;height:64px;border-radius:50%;background:#1F7A4D;color:#fff;display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 22px;">&#10003;</div>' +
       '<h2 style="font-family:\'Archivo\',sans-serif;font-weight:800;font-size:28px;letter-spacing:-0.02em;margin:0 0 10px;color:#241C1F;">You&rsquo;re booked!</h2>' +
-      '<p style="font-size:17px;color:#5C5559;margin:0 0 24px;">' + esc(c.name) + ', we&rsquo;ll see you on <strong style="color:#241C1F;">' + c.date + '</strong> at <strong style="color:#241C1F;">' + c.time + '</strong>.</p>' +
+      '<p style="font-size:17px;color:#5C5559;margin:0 0 24px;">' + esc(c.name) + ', we&rsquo;ll see you on <strong style="color:#241C1F;">' + esc(c.date) + '</strong> at <strong style="color:#241C1F;">' + esc(c.time) + '</strong>.</p>' +
       '<div style="background:#FAF3EF;border:1px solid #DFD0C8;border-radius:7px;padding:18px 22px;display:inline-block;text-align:left;margin-bottom:28px;"><div style="font-size:14px;color:#6E6669;line-height:1.7;">' +
       '<div><strong style="color:#241C1F;">Where:</strong> 20 Allen&rsquo;s Creek Rd, Rochester</div>' +
       '<div><strong style="color:#241C1F;">Bring:</strong> your device, charger &amp; any passwords</div>' +
@@ -349,6 +349,10 @@
 
       if (status === 'captcha_failed') {
         setState({ loading: false, error: 'Verification failed. Please complete the Security check again.' });
+        return;
+      }
+      if (status === 'rate_limited') {
+        setState({ loading: false, error: 'Too many attempts in a short time. Please wait a few minutes and try again, or call us at 585-271-0050.' });
         return;
       }
       if (status === 'slot_taken' || status === 'day_full') {
