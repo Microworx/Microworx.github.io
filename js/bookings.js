@@ -54,6 +54,23 @@
       body: JSON.stringify(body)
     });
   }
+  // The booking form is re-rendered (innerHTML), which destroys any widget
+  // inside it. After each render we re-mount the widget into the fresh
+  // #mwx-turnstile container (placed just above the Confirm button).
+  function mountTurnstile() {
+    var el = document.getElementById('mwx-turnstile');
+    if (!el || el.dataset.rendered) return;
+    if (!(window.turnstile && window.MWX_TURNSTILE_SITEKEY)) return; // not ready yet
+    if (window.MWX_TURNSTILE_WIDGET_ID != null) {
+      try { window.turnstile.remove(window.MWX_TURNSTILE_WIDGET_ID); } catch (e) {}
+      window.MWX_TURNSTILE_WIDGET_ID = null;
+    }
+    try {
+      window.MWX_TURNSTILE_WIDGET_ID = window.turnstile.render(el, { sitekey: window.MWX_TURNSTILE_SITEKEY });
+      el.dataset.rendered = '1';
+    } catch (e) {}
+  }
+  window.mwxMountTurnstile = mountTurnstile; // called by the api.js onload hook
   function turnstileToken() {
     try {
       return (window.turnstile && window.MWX_TURNSTILE_WIDGET_ID != null)
@@ -193,7 +210,8 @@
       '<div><textarea id="bk-problem" data-field="problem" placeholder="Briefly describe your problem" maxlength="80" rows="2" style="' + inputStyle() + 'resize:none;">' + esc(f.problem) + '</textarea>' +
       '<div id="bk-count" style="font-size:12px;color:' + (len >= 75 ? '#B0303E' : '#A89498') + ';text-align:right;margin-top:3px;">' + len + '/80</div></div></div>';
     if (state.error) h += '<div style="margin-top:14px;font-size:13.5px;color:#B0303E;background:#FBEDEE;border:1px solid #F2D5D8;padding:10px 14px;border-radius:6px;">' + esc(state.error) + '</div>';
-    h += '<button type="button" data-act="submit"' + (busy ? ' disabled' : '') + ' style="margin-top:20px;width:100%;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:16px;color:#fff;background:' + (busy ? '#B8909A' : '#7A1F2B') + ';border:none;padding:15px;border-radius:6px;box-shadow:0 4px 14px rgba(122,31,43,.25);cursor:' + (busy ? 'default' : 'pointer') + ';">' + (busy ? 'Booking\u2026' : 'Confirm booking') + '</button>';
+    h += '<div id="mwx-turnstile" style="margin-top:18px;display:flex;justify-content:center;"></div>';
+    h += '<button type="button" data-act="submit"' + (busy ? ' disabled' : '') + ' style="margin-top:14px;width:100%;font-family:\'Archivo\',sans-serif;font-weight:600;font-size:16px;color:#fff;background:' + (busy ? '#B8909A' : '#7A1F2B') + ';border:none;padding:15px;border-radius:6px;box-shadow:0 4px 14px rgba(122,31,43,.25);cursor:' + (busy ? 'default' : 'pointer') + ';">' + (busy ? 'Booking\u2026' : 'Confirm booking') + '</button>';
     h += '<div style="margin-top:10px;font-size:12px;color:#A89498;line-height:1.5;text-align:center;">A $100 diagnostic fee is due at check-in. Extra time billed in 15-min increments at $100/hr with your approval.</div>';
     return h;
   }
@@ -287,6 +305,7 @@
       var el = document.getElementById(id);
       if (el) { el.focus(); if (start != null && el.setSelectionRange) { try { el.setSelectionRange(start, end); } catch (e) {} } }
     }
+    mountTurnstile();
   }
 
   /* ---- async operations ---- */
