@@ -66,7 +66,7 @@
       window.MWX_TURNSTILE_WIDGET_ID = null;
     }
     try {
-      window.MWX_TURNSTILE_WIDGET_ID = window.turnstile.render(el, { sitekey: window.MWX_TURNSTILE_SITEKEY });
+      window.MWX_TURNSTILE_WIDGET_ID = window.turnstile.render(el, { sitekey: window.MWX_TURNSTILE_SITEKEY, theme: 'light' });
       el.dataset.rendered = '1';
     } catch (e) {}
   }
